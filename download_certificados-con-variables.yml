@@ -3,20 +3,20 @@
   hosts: all
   vars:
     # URL de descarga de los certificados
-    CERT_URL: "https://ftp.softnet.cu/certificados/le.tar.gz"
+    CERT_URL: "https://example.com/certificates/sample.tar.gz"
     # Directorio donde se almacenaran los certificados
-    FINAL_CERT_DIR: /home/PruebaAnsible/Certificados
+    FINAL_CERT_DIR: /home/test/Certificados
     # Directorio de trabajo temporal
     CERT_TEMP: /tmp/letsencrypt
     CERT_TEMP_COMPRESS: /tmp/letsencrypt/comprimidos 
     # Declara el dominio  
-    CERT_DOMAIN: "hlg.sld.cu" 
+    CERT_DOMAIN: "example.com" 
     # Datos del Repo donde se va a clonar
-    GITHUB_API_URL: "https://git.softnet.cu/api/v1"
-    GITHUB_URL: "https://git.softnet.cu"
-    GIT_TOKEN: "226ded5817807d5d554e98212dd924bea575994d"
-    GIT_USER: "Testing-Infomed"
-    GIT_REPO: "download_certificados_LetsEncrypt-Infomed" 
+    GITHUB_API_URL: "https://gitea.example.com/v1"
+    GITHUB_URL: "https://github.example.com"
+    GIT_TOKEN: "1234567890abcdef1234567890abcdef12345678"
+    GIT_USER: "TestUser"
+    GIT_REPO: "test_certificates_repo" 
     GIT_BRANCH: "main"
     # Activar o desactivar envio de notificaciones
     # Cambia a "false" para desactivar el envío de correos
@@ -24,16 +24,16 @@
     # Cambia a "false" para desactivar el envío de mensajes a Telegram
     SEND_TELEGRAM: "true"                                                
     # configuracion de correo
-    EMAIL_SMTP_SERVER: "smtp.gmail.com"
+    EMAIL_SMTP_SERVER: "smtp.example.com"
     EMAIL_SMTP_PORT: 587
-    EMAIL_SMTP_USER: "ssanchezhlg@gmail.com"
-    EMAIL_SMTP_PASSWORD: "ygzkyvvqgnqhqsze"
-    EMAIL_SMTP_EMAIL: "ssanchezhlg@gmail.com"
-    EMAIL_SMTP_TO: "ssanchezhlg@infomed.sld.cu"
-    EMAIL_SMTP_BCC: "ssanchezhlg@infomed.sld.cu"
+    EMAIL_SMTP_USER: "testuser@example.com"
+    EMAIL_SMTP_PASSWORD: "examplepassword123"
+    EMAIL_SMTP_EMAIL: "testuser@example.com"
+    EMAIL_SMTP_TO: "recipient@example.com"
+    EMAIL_SMTP_BCC: "bccrecipient@example.com"
     # configuracion de telegram 
-    TELEGRAM_BOT_TOKEN: "5053926255:AAFfxEZjhTscya0yFYt8iWqr90CicM0P_C0"
-    TELEGRAM_CHAT_ID: "-1001618675279"
+    TELEGRAM_BOT_TOKEN: "123456789:ABCdefGhIjKLmnopQRsTUvWxYz12345678"
+    TELEGRAM_CHAT_ID: "9876543210"
     # Cambia a "true" para desactivar notificaciones
     disable_notification: "false"  
     # Cambia a "false" para mostrar vista previa de enlaces
@@ -396,7 +396,7 @@
 
         - name: Combine update notification message
           set_fact:
-            mensaje_texto_actualizados: "----\n==> Script de Renovacion de Certificados Let's Encrypt\n==========================================================\n{{ formatted_date }}\n---------------------------------------------\nEstimados usuarios,\n{{ mensaje_razon_actualizacion }}\n\nEste script se ejecuta de forma automática todos los días, al detectar nuevas versiones de los certificados se descargarán de forma automática.\n\nAsistente virtual - Red - Softnet\nEsta dirección electrónica está protegida contra spam bots\n"
+            mensaje_texto_actualizados: "----\n==> Script de Renovacion de Certificados Let's Encrypt\n==========================================================\n{{ formatted_date }}\n---------------------------------------------\nEstimados usuarios,\n{{ mensaje_razon_actualizacion }}\n\nEste script se ejecuta de forma automática todos los días, al detectar nuevas versiones de los certificados se descargarán de forma automática.\n\nAsistente virtual - Infomed Holguin\nEsta dirección electrónica está protegida contra spam bots\n"
       when: cert_update_status | trim == 'actualizados'
 
 
@@ -424,7 +424,7 @@
 
         - name: Combine no update notification message
           set_fact:
-            mensaje_texto_no_actualizados: "----\n==> Script de Renovacion de Certificados Let's Encrypt\n==========================================================\n{{ formatted_date }}\n---------------------------------------------\nEstimados usuarios,\n{{ mensaje_razon }}\n\nEste script se ejecuta de forma automática todos los días, al detectar nuevas versiones de los certificados se descargarán de forma automática.\n\nAsistente virtual - Red - Softnet\nEsta dirección electrónica está protegida contra spam bots"
+            mensaje_texto_no_actualizados: "----\n==> Script de Renovacion de Certificados Let's Encrypt\n==========================================================\n{{ formatted_date }}\n---------------------------------------------\nEstimados usuarios,\n{{ mensaje_razon }}\n\nEste script se ejecuta de forma automática todos los días, al detectar nuevas versiones de los certificados se descargarán de forma automática.\n\nAsistente virtual - Infomed Holguin\nEsta dirección electrónica está protegida contra spam bots"
       when: cert_update_status | trim == 'no_actualizados'
 
     - name: Obtener lista de archivos comprimidos
