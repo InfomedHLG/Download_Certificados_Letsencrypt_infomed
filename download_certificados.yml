@@ -1,0 +1,453 @@
+---
+- name: Clonar o actualizar el repositorio y subir certificados
+  hosts: all
+  vars:
+    # Directorio temporal
+    CERT_TEMP: /tmp/letsencrypt
+    CERT_TEMP_COMPRESS: /tmp/letsencrypt/comprimidos 
+    # Fecha actual en formato año-mes-día
+    formatted_date: "{{ ansible_date_time.iso8601 | default(lookup('pipe', 'date +%Y-%m-%d')) }}"
+    # Variables dinámicas para el release
+    RELEASE_TAG: "Certificados-LetsEncrypt-{{ ansible_date_time.date }}{{ ansible_date_time.time | regex_replace(':', '') }}"
+    RELEASE_NAME: "Certificados Let's Encrypt - {{ ansible_date_time.date }} {{ ansible_date_time.time }}" 
+    # Variables de entorno
+    GIT_TOKEN: "{{ lookup('env', 'GIT_TOKEN') }}"
+    EMAIL_SMTP_PASSWORD: "{{ lookup('env', 'EMAIL_SMTP_PASSWORD') }}"
+    TELEGRAM_BOT_TOKEN: "{{ lookup('env', 'TELEGRAM_BOT_TOKEN') }}"
+    TELEGRAM_CHAT_ID: "{{ lookup('env', 'TELEGRAM_CHAT_ID') }}"    
+
+
+  tasks:
+  # Parte 1
+    - name: Crear directorio Temporal
+      file:
+        path: "{{ CERT_TEMP }}"
+        state: directory
+
+    - name: Crear directorio de destino final para certificados
+      file:
+        path: "{{ FINAL_CERT_DIR }}"
+        state: directory
+        mode: '0755'        
+        
+    - name: Verificar si el certificado local existe
+      stat:
+        path: "{{ FINAL_CERT_DIR }}/cert.pem"
+      register: local_cert_stat
+
+    - name: Mostrar estado de existencia del certificado
+      debug:
+        msg: "{{ 'existen' if local_cert_stat.stat.exists else 'no_existen' }}"
+      register: cert_existence_status
+
+    - name: Descargar le.tar.gz
+      get_url:
+        url: "{{ CERT_URL }}"
+        dest: "{{ CERT_TEMP }}/le.tar.gz"
+      register: download_result
+      ignore_errors: yes
+      failed_when: download_result.status_code != 200
+
+    - name: Descomprimir le.tar.gz en {{ CERT_TEMP }}
+      ansible.builtin.unarchive:
+        src: "{{ CERT_TEMP }}/le.tar.gz"
+        dest: "{{ CERT_TEMP }}"
+        remote_src: yes
+      when: download_result is succeeded
+
+    - name: Establecer mensaje de error de descarga
+      set_fact:
+        download_error_message: "{{ download_result.msg if download_result is failed else '' }}"
+
+
+    - name: Obtener y renombrar los archivos .pem
+      shell: |
+        last_file=$(ls {{ CERT_TEMP }}/etc/letsencrypt/archive/{{ CERT_DOMAIN }}/{{ item }}*.pem | grep -E "{{ item }}([1-9]|[1-9][0-9]|100)\.pem$" | sort -V | tail -n1)
+        if echo "$last_file" | grep -qE "{{ item }}([1-9]|[1-9][0-9]|100)\.pem$"; then
+          mv "$last_file" {{ CERT_TEMP }}/{{ item }}.pem
+        fi
+      loop:
+        - cert
+        - chain
+        - fullchain
+        - privkey
+      when: download_result is succeeded
+
+
+    - block:
+        - name: Eliminar el archivo le.tar.gz
+          file:
+            path: "{{ CERT_TEMP }}/le.tar.gz"
+            state: absent
+
+        - name: Eliminar la carpeta descomprimida
+          file:
+            path: "{{ CERT_TEMP }}/etc"
+            state: absent
+      when: download_result is succeeded
+
+## Trabajo para obtener la fecha de expiración del certificado remoto
+    - block:
+        - name: Obtener la fecha de expiración del certificado remoto
+          command: openssl x509 -noout -enddate -in "{{ CERT_TEMP }}/cert.pem"
+          register: remote_cert_date_raw
+
+        - name: Formatear la fecha de expiración del certificado remoto
+          set_fact:
+            remote_cert_expiration_date: "{{ remote_cert_date_raw.stdout | regex_replace('notAfter=', '') }}"
+
+        - name: Formatear la fecha de expiración del certificado remoto
+          command: date -d"{{ remote_cert_date_raw.stdout | regex_replace('notAfter=', '') }}" "+%d de %B del %Y > %I:%M:%S %p"
+          register: formatted_remote_cert_expiration_date
+          environment:
+            LC_TIME: es_ES.UTF-8
+          no_log: false    
+
+        - name: Formatear la fecha de expiración del certificado remoto en formato año-mes-día
+          command: date -d"{{ remote_cert_date_raw.stdout | regex_replace('notAfter=', '') }}" "+%Y-%m-%d"
+          register: formatted_remote_cert_expiration_date_ymd
+          no_log: false
+      when: download_result is succeeded
+
+## Trabajo para obtener la fecha de expiración del certificado local
+    - block:
+        - name: Obtener la fecha de expiración del certificado local
+          command: openssl x509 -noout -enddate -in "{{ FINAL_CERT_DIR }}/cert.pem"
+          register: local_cert_date_raw
+
+        - name: Formatear la fecha de expiración del certificado local
+          set_fact:
+            local_cert_expiration_date: "{{ local_cert_date_raw.stdout | regex_replace('notAfter=', '') }}"
+
+        - name: Formatear la fecha de expiración del certificado Local
+          command: date -d"{{ local_cert_date_raw.stdout | regex_replace('notAfter=', '') }}" "+%d de %B del %Y > %I:%M:%S %p"
+          register: formatted_local_cert_expiration_date
+          environment:
+            LC_TIME: es_ES.UTF-8
+          no_log: false    
+
+        - name: Formatear la fecha de expiración del certificado Local en formato año-mes-día
+          command: date -d"{{ local_cert_date_raw.stdout | regex_replace('notAfter=', '') }}" "+%Y-%m-%d"
+          register: formatted_local_cert_expiration_date_ymd
+          no_log: false
+      when: local_cert_stat.stat.exists
+
+
+    - name: Establecer el estado de actualización del certificado basado en las fechas de vencimiento
+      set_fact:
+        cert_update_status: >-
+          {{ 
+            'actualizados' if (
+              download_result is succeeded and
+              not (local_cert_stat.stat.exists and 
+              local_cert_expiration_date is defined and 
+              remote_cert_expiration_date is defined and 
+              local_cert_expiration_date == remote_cert_expiration_date)
+            ) else 
+            'no_actualizados' 
+          }}
+
+    - name: Mostrar el estado de actualización de certificados
+      debug:
+        msg: "El estado de actualización de los certificados es: {{ cert_update_status }}"
+
+    - name: Verificar si el certificado local existe
+      stat:
+        path: "{{ FINAL_CERT_DIR }}/cert.pem"
+      register: local_cert_stat
+
+    - name: Copiar certificados si es necesario
+      copy:
+        src: "{{ CERT_TEMP }}/"
+        dest: "{{ FINAL_CERT_DIR }}/"
+        mode: '0644'
+        remote_src: yes
+      when: cert_update_status | trim == "actualizados"
+
+    - name: Crear directorio para compresión si no existe
+      file:
+        path: "{{ CERT_TEMP_COMPRESS }}"
+        state: directory
+        mode: '0755'
+      when: 
+        - cert_update_status is defined
+        - cert_update_status | trim == "actualizados"
+        - download_result is succeeded
+
+    - name: Comprimir certificados en el directorio de compresión
+      archive:
+        path: "{{ FINAL_CERT_DIR }}/*.pem"
+        dest: "{{ CERT_TEMP_COMPRESS }}/{{ CERT_DOMAIN }}-{{ formatted_remote_cert_expiration_date_ymd.stdout }}.tar.gz"
+      when: 
+        - cert_update_status is defined
+        - cert_update_status | trim == "actualizados"
+        - download_result is succeeded
+
+
+# Parte para subir archivos comprimidos a GitHub
+    - block:
+        - name: Verificar si el release ya existe
+          uri:
+            url: "{{ GITHUB_API_URL }}/repos/{{ GIT_USER }}/{{ GIT_REPO }}/releases/tags/{{ RELEASE_TAG }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ GIT_TOKEN }}"
+              Accept: "application/vnd.github.v3+json"
+            status_code: [200, 404]
+            validate_certs: yes
+            force_basic_auth: yes
+            timeout: 30
+          register: release_check
+          failed_when: release_check.status not in [200, 404]
+          retries: 3
+          delay: 5
+
+        - name: Establecer método y URL para crear o actualizar la release
+          set_fact:
+            release_method: "{{ 'POST' if release_check.status == 404 else 'PATCH' }}"
+            release_url: "{{ GITHUB_API_URL }}/repos/{{ GIT_USER }}/{{ GIT_REPO }}/releases{{ '' if release_check.status == 404 else '/' ~ release_check.json.id }}"
+
+        - name: Obtener la fecha de expiración del certificado remoto
+          command: openssl x509 -noout -enddate -in "{{ CERT_TEMP }}/cert.pem"
+          register: remote_cert_date_raw
+
+        - name: Formatear la fecha de expiración del certificado remoto
+          set_fact:
+            remote_cert_expiration_date: "{{ remote_cert_date_raw.stdout | regex_replace('notAfter=', '') }}"
+
+        - name: Definir información de expiración de certificados
+          set_fact:
+            cert_expiry_info:
+              - domain: "{{ CERT_DOMAIN }}"
+                expiration_date: "{{ remote_cert_expiration_date }}"
+
+        - name: Crear o actualizar la release en GitHub
+          uri:
+            url: "{{ release_url }}"
+            method: "{{ release_method }}"
+            headers:
+              Authorization: "Bearer {{ GIT_TOKEN }}"
+              Content-Type: "application/json"
+            body: |
+              {
+                "tag_name": "{{ RELEASE_TAG }}",
+                "target_commitish": "{{ GIT_BRANCH }}",
+                "name": "{{ RELEASE_NAME }}",
+                "body": "Release automatizado de certificados Let's Encrypt\n\nFechas de vencimiento de certificados:\n{% for cert in cert_expiry_info %}* {{ cert.domain }}: {{ cert.expiration_date }}\n{% endfor %}",
+                "draft": false,
+                "prerelease": false,
+                "generate_release_notes": false
+              }
+            body_format: json
+            status_code: [200, 201]
+          register: release_response
+
+        - name: Obtener el upload_url de la release creada o actualizada
+          set_fact:
+            upload_url: "{{ release_response.json.upload_url | regex_replace('\\{.*', '') }}"
+
+        - name: Buscar archivos comprimidos en el directorio
+          find:
+            paths: "{{ CERT_TEMP_COMPRESS }}"
+            patterns: "*.tar.gz"
+          register: found_files
+
+        - name: Subir archivos comprimidos a la release
+          uri:
+            url: "{{ upload_url }}?name={{ item.path | basename }}"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ GIT_TOKEN }}"
+              Content-Type: "application/gzip"
+            src: "{{ item.path }}"
+            remote_src: yes
+            status_code: 201
+          loop: "{{ found_files.files }}"
+      when: cert_update_status | trim == "actualizados" and UPLOAD_RELEASES == "true"
+
+
+# Eliminar releases y tags antiguos en Gitea/GitHub
+    - block:
+        - name: Obtener releases existentes
+          uri:
+            url: "{{ GITHUB_API_URL }}/repos/{{ GIT_USER }}/{{ GIT_REPO }}/releases"
+            method: GET
+            headers:
+              Authorization: "token {{ GIT_TOKEN }}"
+              Accept: "application/vnd.github.v3+json"
+          register: releases_result
+
+        - name: Obtener tags existentes
+          uri:
+            url: "{{ GITHUB_API_URL }}/repos/{{ GIT_USER }}/{{ GIT_REPO }}/tags"
+            method: GET
+            headers:
+              Authorization: "token {{ GIT_TOKEN }}"
+              Accept: "application/vnd.github.v3+json"
+          register: tags_result
+
+        - name: Mostrar información de releases y tags
+          debug:
+            msg: |
+              === Releases ===
+              Los {{ RELEASES_TO_KEEP | int }} releases más recientes son:
+              {% for release in (releases_result.json | sort(attribute='created_at') | reverse)[:RELEASES_TO_KEEP | int] %}
+              - {{ release.name }} ({{ release.created_at }})
+              {% endfor %}
+    
+              === Tags ===
+              Los {{ RELEASES_TO_KEEP | int }} tags más recientes son:
+              {% for tag in (tags_result.json | sort(attribute='name') | reverse)[:RELEASES_TO_KEEP | int] %}
+              - {{ tag.name }}
+              {% endfor %}
+
+        - name: Identificar elementos a eliminar
+          set_fact:
+            releases_to_delete: "{{ (releases_result.json | sort(attribute='created_at') | reverse)[RELEASES_TO_KEEP | int:] }}"
+            tags_to_delete: "{{ (tags_result.json | sort(attribute='name') | reverse)[RELEASES_TO_KEEP | int:] }}"
+
+        - name: Eliminar releases y tags antiguos en Gitea/GitHub
+          uri:
+            url: >-
+              {{ GITHUB_API_URL }}/repos/{{ GIT_USER }}/{{ GIT_REPO }}/
+              {%- if item in releases_to_delete -%}
+                releases/{{ item.id }}
+              {%- elif item in tags_to_delete -%}
+                {{ 'tags/' ~ item.name if '/api/v1' in GITHUB_API_URL else 'git/refs/tags/' ~ item.name | urlencode }}
+              {%- endif -%}
+            method: DELETE
+            headers:
+              Authorization: "token {{ GIT_TOKEN }}"
+              Accept: "{{ 'application/vnd.gitea.v1+json' if '/api/v1' in GITHUB_API_URL else 'application/vnd.github.v3+json' }}"
+            status_code: [204]
+            timeout: 60
+          loop: "{{ releases_to_delete + tags_to_delete }}"
+      when: cert_update_status | trim == "actualizados" and DELETE_RELEASES == "true"
+
+
+
+
+## Mensaje de notificaciones
+    - block:
+        - name: Determinar razón para el mensaje de actualización
+          set_fact:
+            mensaje_razon_actualizacion: >-
+              {% if cert_existence_status.msg == 'no_existen' %}
+                Estamos notificando que los certificados Let's Encrypt se copiaron a la carpeta de certificados, pero no se encontraban en el directorio. 
+                Esto puede ser porque es la primera vez que se ejecuta este script en el servidor, o que se hayan eliminado por accidente.
+                
+                Fecha de expiración del certificado descargados: {{ formatted_remote_cert_expiration_date.stdout }}
+
+                Puede proceder a descargar el mismo desde el repositorio url:
+                {{ GITHUB_URL }}/{{ GIT_USER }}/{{ GIT_REPO }}/releases
+                Los mismos se encuentran en los releases del repositorio
+                
+          
+              {% elif cert_existence_status.msg == 'existen' %}
+                Estamos notificando que los ceritificados Let's Encrypt se han actualizado
+
+                Fecha de expiración del certificado remoto: {{ formatted_remote_cert_expiration_date.stdout }}
+                Fecha de expiración del certificado local: {{ formatted_local_cert_expiration_date.stdout }}
+
+                Puede proceder a descargar el mismo desde el repositorio url:
+                {{ GITHUB_URL }}/{{ GIT_USER }}/{{ GIT_REPO }}/releases
+                Los mismos se encuentran en los releases del repositorio
+
+              {% endif %}
+
+        - name: Combine update notification message
+          set_fact:
+            mensaje_texto_actualizados: "----\n==> Script de Renovacion de Certificados Let's Encrypt\n==========================================================\n{{ formatted_date }}\n---------------------------------------------\nEstimados usuarios,\n{{ mensaje_razon_actualizacion }}\n\nEste script se ejecuta de forma automática todos los días, al detectar nuevas versiones de los certificados se descargarán de forma automática.\n\nAsistente virtual - Infomed Holguin\nEsta dirección electrónica está protegida contra spam bots\n"
+      when: cert_update_status | trim == 'actualizados'
+
+
+
+
+## Mensaje de notificaciones al no actualizar
+    - block:
+        - name: Determinar la razón para el mensaje de no actualización
+          set_fact:
+            mensaje_razon: >-
+              {% if download_result is failed %}
+                Estamos notificando que los certificados Let's Encrypt no se han actualizado debido a un error al descargarlos.
+                
+                Fecha de expiración del certificado local: {{ formatted_local_cert_expiration_date.stdout }}
+              {% elif local_cert_stat.stat.exists and local_cert_expiration_date == remote_cert_expiration_date %}
+                Estamos notificando que los certificados Let's Encrypt no se han actualizado ya que los mismos son iguales.
+                
+                Fecha de expiración del certificado remoto: {{ formatted_remote_cert_expiration_date.stdout }}
+                Fecha de expiración del certificado local: {{ formatted_local_cert_expiration_date.stdout }}
+              {% else %}
+                Estamos notificando que los certificados Let's Encrypt no se han actualizado. Razón desconocida para la falta de actualización.
+                
+                Fecha de expiración del certificado local: {{ formatted_local_cert_expiration_date.stdout }}
+              {% endif %}
+
+        - name: Combine no update notification message
+          set_fact:
+            mensaje_texto_no_actualizados: "----\n==> Script de Renovacion de Certificados Let's Encrypt\n==========================================================\n{{ formatted_date }}\n---------------------------------------------\nEstimados usuarios,\n{{ mensaje_razon }}\n\nEste script se ejecuta de forma automática todos los días, al detectar nuevas versiones de los certificados se descargarán de forma automática.\n\nAsistente virtual - Infomed Holguin\nEsta dirección electrónica está protegida contra spam bots"
+      when: cert_update_status | trim == 'no_actualizados'
+
+    - name: Obtener lista de archivos comprimidos
+      find:
+        paths: "{{ CERT_TEMP_COMPRESS }}"
+        patterns: "*.tar.gz"
+        recurse: no
+      register: archivos_comprimidos
+      when: cert_update_status == 'actualizados' 
+
+    - name: Enviar correo de notificación
+      mail:
+        host: "{{ EMAIL_SMTP_SERVER }}"
+        port: "{{ EMAIL_SMTP_PORT }}"
+        username: "{{ EMAIL_SMTP_USER }}"
+        password: "{{ EMAIL_SMTP_PASSWORD }}"
+        to: "{{ EMAIL_SMTP_TO }}"
+        bcc: "{{ EMAIL_SMTP_BCC }}" 
+        subject: "Notificación de Actualización de Certificados - Let's Encrypt - {{ formatted_date }}"
+        body: "{{ mensaje_texto_actualizados if cert_update_status == 'actualizados' else mensaje_texto_no_actualizados }}"
+        from: "{{ EMAIL_SMTP_EMAIL }}"
+        attach: "{{ archivos_comprimidos.files | map(attribute='path') | list if cert_update_status == 'actualizados' else [] }}"
+        secure: starttls 
+      when: SEND_EMAIL | bool
+      ignore_errors: yes
+
+# Parte para enviar mensajes a Telegram
+    - name: Enviar mensaje de texto a Telegram
+      uri:
+        url: "https://api.telegram.org/bot{{ TELEGRAM_BOT_TOKEN }}/sendMessage"
+        method: POST
+        body:
+          chat_id: "{{ TELEGRAM_CHAT_ID }}"
+          text: "<pre>{{ mensaje_texto_actualizados if cert_update_status == 'actualizados' else mensaje_texto_no_actualizados }}</pre>"
+          parse_mode: "HTML"
+          disable_notification: "{{ disable_notification | bool }}"
+          disable_web_page_preview: "{{ disable_web_page_preview | bool }}"
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        status_code: 200
+      when: SEND_TELEGRAM | bool
+
+    - name: Enviar archivo comprimido a Telegram
+      command: >
+        curl -s -X POST "https://api.telegram.org/bot{{ TELEGRAM_BOT_TOKEN }}/sendDocument" 
+        -F "chat_id={{ TELEGRAM_CHAT_ID }}" 
+        -F "document=@{{ item.path }}"
+      register: document_response
+      when: cert_update_status == 'actualizados' and SEND_TELEGRAM | bool
+      loop: "{{ archivos_comprimidos.files }}"
+      no_log: true                                   
+      loop_control:
+        loop_var: item
+      ignore_errors: yes
+
+# Eliminar directorios temporales
+    - name: Eliminar directorios temporales
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ CERT_TEMP }}"
+        - "{{ CERT_TEMP_COMPRESS }}"
+
