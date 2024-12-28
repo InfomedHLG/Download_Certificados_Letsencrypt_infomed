@@ -18,7 +18,7 @@
 3. [🛠 Requisitos](#-requisitos)
 4. [📡 Implementación con SemaphoreUI](docs/readme_implementación_semaphoreui.md)
 5. [📜 Implementación con Playbook](docs/readme_ejecutar_playbook.md)
-6. [💡 Implementación con Script Bash](docs/readme_ejecutar_script_bash.md)
+6. [💡 Implementación con Script Bash](docs/readme_ejecutar_script_bash.md) [📥 Descargar Script](descargar_certificado_infomed.sh)
 7. [📡 Implementación para el uso de MTA](docs/readme_implementación_mta.md)
 
 </details>

@@ -59,13 +59,18 @@ Este script en Bash ofrece una solución más sencilla que un playbook para mant
 
 2. Agrega la siguiente línea para programar la ejecución diaria del script:
    ```bash
-   0 0 * * * /url/local/bin/descargar_certificado_infomed.sh 2>&1
+   0 0 * * * /ruta/al/repositorio/descargar_certificado_infomed.sh 2>&1
    ```
 
 3. Reinicia el servicio cron:
    ```bash
    /etc/init.d/cron restart
    ```
+
+### 📜 Ruta del Script
+
+- El script Bash `descargar_certificado_infomed.sh` se encuentra en la raíz del repositorio.
+- Puedes descargar el script directamente desde [aquí](../descargar_certificado_infomed.sh).
 
 ---
 
